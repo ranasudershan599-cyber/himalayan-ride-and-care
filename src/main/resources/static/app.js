@@ -1,0 +1,44 @@
+const $ = selector => document.querySelector(selector);
+const api = async (path, options={}) => {
+  const response=await fetch(path,{headers:{'Content-Type':'application/json'},...options});
+  if(response.status===204)return null;
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok)throw new Error(data.error||data.message||`Request failed (${response.status})`);
+  return data;
+};
+const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const say=(text,error=false)=>{ $('#message').textContent=text; $('#message').className=error?'error':''; };
+$('#startDate').min=new Date().toISOString().slice(0,10);
+$('#endDate').min=$('#startDate').min;
+$('#startDate').addEventListener('change',()=>$('#endDate').min=$('#startDate').value);
+
+async function reload(){
+  const [customers,bikes,destinations,rentals,assist,payments,summary]=await Promise.all([
+    api('/api/customers'),api('/api/motorcycles'),api('/api/destinations'),api('/api/rentals'),api('/api/assistance'),api('/api/payments'),api('/api/dashboard')
+  ]);
+  const customerOptions=customers.map(c=>`<option value="${c.id}">${esc(c.name)} · ${esc(c.phone)}</option>`).join('');
+  $('#customerSelect').innerHTML=customerOptions||'<option value="">Add a customer first</option>';
+  $('#assistanceCustomer').innerHTML=customerOptions||'<option value="">Add a customer first</option>';
+  $('#motorcycleSelect').innerHTML=bikes.filter(b=>b.status==='AVAILABLE').map(b=>`<option value="${b.id}">${esc(b.registrationNumber)} · ${esc(b.model)} (₹${Number(b.dailyRate).toLocaleString('en-IN')}/day)</option>`).join('')||'<option value="">No available motorcycles</option>';
+  $('#destinationSelect').innerHTML='<option value="">Not selected</option>'+destinations.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join('');
+  $('#availableCount').textContent=summary.availableMotorcycles;
+  $('#activeCount').textContent=summary.currentRentals;
+  $('#assistanceCount').textContent=summary.openAssistanceCases;
+  $('#fleetRows').innerHTML=bikes.map(b=>`<tr><td>${esc(b.registrationNumber)}</td><td>${esc(b.model)}</td><td>₹${Number(b.dailyRate).toLocaleString('en-IN')}</td><td>${b.odometerKm} km</td><td><select data-bike-status="${b.id}"><option ${b.status==='AVAILABLE'?'selected':''}>AVAILABLE</option><option ${b.status==='MAINTENANCE'?'selected':''}>MAINTENANCE</option><option ${b.status==='INACTIVE'?'selected':''}>INACTIVE</option></select></td></tr>`).join('');
+  $('#rentalRows').innerHTML=rentals.length?rentals.map(r=>`<tr><td>${esc(r.customer.name)}<br><small>${esc(r.customer.phone)}</small></td><td>${esc(r.motorcycle.registrationNumber)}<br><small>${esc(r.motorcycle.model)}</small></td><td>${r.startDate}<br>to ${r.endDate}</td><td>${esc(r.destination?.name||'—')}</td><td><span class="badge">${esc(r.status)}</span></td><td>${r.pickupOdometerKm??'—'} / ${r.returnOdometerKm??'—'} km<br><div class="actions">${r.status==='PENDING'?`<button data-confirm="${r.id}">Confirm</button>`:''}${r.status==='CONFIRMED'?`<button data-checkout="${r.id}">Check out</button>`:''}${r.status==='ACTIVE'?`<button data-return="${r.id}">Return</button>`:''}${['PENDING','CONFIRMED'].includes(r.status)?`<button class="delete" data-cancel="${r.id}">Cancel</button>`:''}</div></td></tr>`).join(''):'<tr><td colspan="6">No rentals recorded yet.</td></tr>';
+  const rentalOptions=rentals.map(r=>`<option value="${r.id}">#${r.id} · ${esc(r.customer.name)} · ${esc(r.motorcycle.registrationNumber)}</option>`).join('');
+  $('#paymentBooking').innerHTML=rentalOptions||'<option value="">Create a rental first</option>';
+  $('#assistanceBooking').innerHTML='<option value="">No linked rental</option>'+rentalOptions;
+  $('#destinationCards').innerHTML=destinations.map(d=>`<article class="route-card"><h3>${esc(d.name)}</h3><p>${esc(d.description)}</p></article>`).join('');
+  $('#assistanceRows').innerHTML=assist.length?assist.map(a=>`<tr><td>${esc(a.customer.name)}</td><td>${esc(a.category)}<br><small>${esc(a.location)}</small><br><small>${esc(a.description)}</small></td><td><span class="badge ${a.priority==='URGENT'?'urgent':''}">${esc(a.priority)}</span></td><td>${esc(a.assignedTo||'Unassigned')}</td><td>${esc(a.status)}</td><td><div class="actions"><button data-assign="${a.id}">Assign</button><button class="quiet" data-progress="${a.id}">Next status</button></div></td></tr>`).join(''):'<tr><td colspan="6">No assistance cases recorded.</td></tr>';
+  $('#payments').innerHTML=payments.length?`<h3>Recorded transactions</h3>${payments.map(p=>`<p class="payment-row">Rental #${p.booking.id} · ₹${Number(p.amount).toLocaleString('en-IN')} · ${esc(p.method)} · ${new Date(p.paidAt).toLocaleDateString()}</p>`).join('')}`:'';
+}
+$('#rentalForm').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;const v=Object.fromEntries(new FormData(form));for(const k of ['customerId','motorcycleId','destinationId'])v[k]=v[k]?Number(v[k]):null;try{await api('/api/rentals',{method:'POST',body:JSON.stringify(v)});form.reset();say('Rental request saved as pending.');await reload();}catch(err){say(err.message,true);}});
+$('#customerForm').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;const v=Object.fromEntries(new FormData(form));if(!v.email)v.email=null;try{await api('/api/customers',{method:'POST',body:JSON.stringify(v)});form.reset();await reload();say('Customer added.');}catch(err){say(err.message,true);}});
+$('#motorcycleForm').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;const v=Object.fromEntries(new FormData(form));v.dailyRate=Number(v.dailyRate);v.odometerKm=Number(v.odometerKm);v.status='AVAILABLE';try{await api('/api/motorcycles',{method:'POST',body:JSON.stringify(v)});form.reset();await reload();say('Motorcycle added to the fleet.');}catch(err){say(err.message,true);}});
+$('#fleetRows').addEventListener('change',async e=>{const id=e.target.dataset.bikeStatus;if(!id)return;try{await api(`/api/motorcycles/${id}/status`,{method:'PATCH',body:JSON.stringify({status:e.target.value})});await reload();say('Motorcycle status updated.');}catch(err){say(err.message,true);}});
+$('#paymentForm').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;const v=Object.fromEntries(new FormData(form));v.bookingId=Number(v.bookingId);v.amount=Number(v.amount);try{await api('/api/payments',{method:'POST',body:JSON.stringify(v)});form.reset();await reload();say('Payment record saved. This records information only; it does not charge a payment provider.');}catch(err){say(err.message,true);}});
+$('#assistanceForm').addEventListener('submit',async e=>{e.preventDefault();const form=e.currentTarget;const v=Object.fromEntries(new FormData(form));v.customerId=Number(v.customerId);v.bookingId=v.bookingId?Number(v.bookingId):null;try{await api('/api/assistance',{method:'POST',body:JSON.stringify(v)});form.reset();await reload();say('Assistance case opened. This does not contact emergency services.');}catch(err){say(err.message,true);}});
+$('#rentalRows').addEventListener('click',async e=>{const id=e.target.dataset.confirm||e.target.dataset.checkout||e.target.dataset.return||e.target.dataset.cancel;if(!id)return;try{if(e.target.dataset.confirm)await api(`/api/rentals/${id}/status`,{method:'PATCH',body:JSON.stringify({status:'CONFIRMED'})});if(e.target.dataset.checkout){const km=Number(prompt('Enter pickup odometer reading in kilometres:'));if(!Number.isFinite(km))return;await api(`/api/rentals/${id}/checkout`,{method:'POST',body:JSON.stringify({odometerKm:km})});}if(e.target.dataset.return){const km=Number(prompt('Enter return odometer reading in kilometres:'));if(!Number.isFinite(km))return;await api(`/api/rentals/${id}/return`,{method:'POST',body:JSON.stringify({odometerKm:km})});}if(e.target.dataset.cancel&&confirm('Cancel this rental request?'))await api(`/api/rentals/${id}/status`,{method:'PATCH',body:JSON.stringify({status:'CANCELLED'})});await reload();}catch(err){say(err.message,true);}});
+$('#assistanceRows').addEventListener('click',async e=>{const id=e.target.dataset.assign||e.target.dataset.progress;if(!id)return;try{const row=e.target.closest('tr');const current=row.children[4].textContent;const statuses=['OPEN','ASSIGNED','IN_PROGRESS','RESOLVED','CLOSED'];let payload;if(e.target.dataset.assign){const who=prompt('Responder name:');if(who===null)return;payload={assignedTo:who,status:'ASSIGNED'};}else{const index=statuses.indexOf(current);payload={status:statuses[Math.min(index+1,statuses.length-1)]};}await api(`/api/assistance/${id}`,{method:'PATCH',body:JSON.stringify(payload)});await reload();}catch(err){say(err.message,true);}});
+reload().catch(err=>say(`Could not load project data: ${err.message}. Check MySQL and the application.`,true));
